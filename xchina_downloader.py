@@ -450,7 +450,8 @@ def download_m3u8_to_mp4(m3u8_url, referer):
         ], capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
 
         if result.returncode != 0:
-            logger.warning("  ffmpeg merge failed")
+            tail = result.stderr.decode(errors='replace')[-200:] if result.stderr else 'no stderr'
+            logger.warning(f"  ffmpeg merge failed: {tail}")
             return None
 
         size_mb = os.path.getsize(out_path) / 1024 / 1024
