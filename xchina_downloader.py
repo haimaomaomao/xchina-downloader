@@ -403,11 +403,9 @@ def download_m3u8_to_mp4(m3u8_url, referer):
     try:
         result = subprocess.run(
             cmd,
-            capture_output=False,
+            capture_output=True,
             timeout=FFMPEG_TIMEOUT,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
         )
         # Clean up headers file
         try:
@@ -416,7 +414,8 @@ def download_m3u8_to_mp4(m3u8_url, referer):
             pass
 
         if result.returncode != 0:
-            logger.warning("  ffmpeg failed")
+            stderr_tail = result.stderr.decode(errors='replace')[-300:] if result.stderr else 'no stderr'
+            logger.warning(f"  ffmpeg failed (rc={result.returncode}): {stderr_tail}")
             try:
                 os.unlink(out_path)
             except:
