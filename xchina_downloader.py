@@ -74,6 +74,7 @@ def inject_cookies(cookie_str):
         if "=" in part:
             k, v = part.split("=", 1)
             SESSION.cookies.set(k.strip(), v.strip(), domain="xchina.co")
+            SESSION.cookies.set(k.strip(), v.strip(), domain="video.xchina.download")
     logger.info("Cookies injected")
 
 inject_cookies(CF_COOKIE)
