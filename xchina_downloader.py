@@ -281,9 +281,9 @@ def get_videos_from_list(page):
             "vid_id": vid_id,
             "url": detail_url,
             "cover": cover,
-            "actor": actor,
-            "platform": platform,
-            "title": title_from_list,
+            "演员": actor,
+            "平台": platform,
+            "标题": title_from_list,
         })
 
     logger.info(f"  Found {len(videos)} videos")
