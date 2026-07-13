@@ -442,18 +442,17 @@ def download_m3u8_to_mp4(m3u8_url, referer):
 
 
 # ==================== Telegram sending ====================
-def build_caption(info):
-    """鏋勫缓涓枃 caption锛屼粠 info 瀛楀吀涓鍙栦腑鏂?key銆?""
-    title = info.get("鏍囬", "Unknown")
-    platform = info.get("骞冲彴", "")
-    actor = info.get("婕斿憳", "")
-    lines = [f"鏍囬: {title}"]
-    if platform:
-        lines.append(f"骞冲彴: #{platform}")
-    if actor:
-        lines.append(f"婕斿憳: #{actor}")
-    return "\n".join(lines)
 
+def build_caption(info):
+    title = info.get("title", "Unknown")
+    platform = info.get("platform", "")
+    actor = info.get("actor", "")
+    lines = [f"Title: {title}"]
+    if platform:
+        lines.append(f"Platform: #{platform}")
+    if actor:
+        lines.append(f"Actor: #{actor}")
+    return "\n".join(lines)
 
 async def send_video_with_thumb(client, video_path, thumb_path, caption):
     try:
@@ -471,7 +470,6 @@ async def send_video_with_thumb(client, video_path, thumb_path, caption):
     except Exception as e:
         logger.error(f"  Send failed: {e}")
         return False
-
 
 # ==================== Session restore helper ====================
 _session_restored_at_least_once = False
