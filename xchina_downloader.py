@@ -417,13 +417,30 @@ def download_m3u8_to_mp4(m3u8_url, referer):
         if len(seg_files) < len(segments) * 0.8:
             logger.warning(f"  Too many segments failed: {len(seg_files)}/{len(segments)}")
             return None
-        # Step 4: Binary concatenate all TS segments (no ffmpeg needed)
-        with open(out_path, "wb") as outf:
+        # Step 4: Binary concatenate TS segments to temp file
+        ts_path = os.path.join(tmp_dir, "concat.ts")
+        with open(ts_path, "wb") as outf:
             for _, fname in seg_files:
                 with open(fname, "rb") as inf:
                     outf.write(inf.read())
+        ts_size = os.path.getsize(ts_path) / 1024 / 1024
+        logger.info(f"  TS downloaded: {ts_size:.1f}MB ({len(seg_files)} segments)")
+        # Step 5: Remux TS to proper MP4 (so Telegram can stream inline)
+        cmd = [
+            "ffmpeg", "-y", "-i", ts_path,
+            "-c", "copy", "-movflags", "+faststart",
+            "-f", "mp4", out_path
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=FFMPEG_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            logger.warning(f"  ffmpeg remux timeout ({FFMPEG_TIMEOUT}s)")
+            return None
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"  ffmpeg remux failed: {e.stderr.decode()[:200] if e.stderr else 'unknown'}")
+            return None
         size_mb = os.path.getsize(out_path) / 1024 / 1024
-        logger.info(f"  Video downloaded: {size_mb:.1f}MB ({len(seg_files)} segments)")
+        logger.info(f"  MP4 ready: {size_mb:.1f}MB")
         return out_path
     except Exception as e:
         logger.error(f"  Download error: {e}")
