@@ -441,7 +441,22 @@ def download_m3u8_to_mp4(m3u8_url, referer):
             return None
         size_mb = os.path.getsize(out_path) / 1024 / 1024
         logger.info(f"  MP4 ready: {size_mb:.1f}MB")
-        return out_path
+        # Step 6: Extract duration via ffprobe
+        duration = None
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", out_path],
+                capture_output=True, text=True, timeout=30
+            )
+            secs = float(result.stdout.strip())
+            if secs >= 3600:
+                duration = f"{int(secs//3600)}:{int(secs%3600//60):02d}:{int(secs%60):02d}"
+            else:
+                duration = f"{int(secs//60)}:{int(secs%60):02d}"
+        except:
+            pass
+        return out_path, duration
     except Exception as e:
         logger.error(f"  Download error: {e}")
         return None
@@ -460,12 +475,16 @@ def download_m3u8_to_mp4(m3u8_url, referer):
 
 # ==================== Telegram sending ====================
 
-def build_caption(info):
+SKIP_PLATFORMS = {"其他中文AV", "独立创作者"}
+
+def build_caption(info, duration=None):
     title = info.get("标题", "Unknown")
     platform = info.get("平台", "")
     actor = info.get("演员", "")
     lines = [f"标题：{title}"]
-    if platform:
+    if duration:
+        lines.append(f"时长：{duration}")
+    if platform and platform not in SKIP_PLATFORMS:
         lines.append(f"平台：#{platform}")
     if actor:
         lines.append(f"演员：#{actor}")
@@ -565,11 +584,12 @@ async def run_once():
                 logger.warning("  No m3u8 found, will retry next run")
                 failed_videos.append(video["vid_id"])
                 continue
-            video_path = download_m3u8_to_mp4(m3u8, video["url"])
-            if not video_path:
+            result = download_m3u8_to_mp4(m3u8, video["url"])
+            if not result:
                 logger.warning("  Download failed, will retry next run")
                 failed_videos.append(video["vid_id"])
                 continue
+            video_path, duration = result
             thumb_path = None
             img_url = get_preview_image_url(video["url"])
             if not img_url and video.get("cover"):
@@ -579,7 +599,7 @@ async def run_once():
                 thumb_path = download_and_convert_thumbnail(img_url, video["url"])
             else:
                 logger.warning("  No preview image found, sending without thumbnail")
-            caption = build_caption(video)
+            caption = build_caption(video, duration)
             ok = await send_video_with_thumb(client, video_path, thumb_path, caption)
             for p in [video_path, thumb_path]:
                 if p and os.path.exists(p):
