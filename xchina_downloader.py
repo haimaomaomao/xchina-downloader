@@ -482,12 +482,12 @@ def build_caption(info, duration=None):
     platform = info.get("平台", "")
     actor = info.get("演员", "")
     lines = [f"标题：{title}"]
-    if duration:
-        lines.append(f"时长：{duration}")
     if platform and platform not in SKIP_PLATFORMS:
         lines.append(f"平台：#{platform}")
     if actor:
         lines.append(f"演员：#{actor}")
+    if duration:
+        lines.append(f"时长：{duration}")
     return "\n".join(lines)
 
 async def send_video_with_thumb(client, video_path, thumb_path, caption):
