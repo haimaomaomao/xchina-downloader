@@ -348,19 +348,35 @@ def download_and_convert_thumbnail(url, referer, max_size_kb=200, max_dim=640):
         logger.info(f"  Downloading preview: {url[:80]}...")
         r = SESSION.get(url, headers={"Referer": referer}, timeout=30)
         r.raise_for_status()
-        if len(r.content) < 2000:
-            logger.warning("  Image too small, may be invalid")
+        content_type = r.headers.get("Content-Type", "")
+        if len(r.content) < 500:
+            logger.warning(f"  Image too small ({len(r.content)} bytes), may be placeholder")
             return None
         img = Image.open(io.BytesIO(r.content))
-        if img.mode in ('RGBA', 'LA', 'P'):
+        logger.debug(f"  Image format={img.format} mode={img.mode} size={img.size}")
+        # Convert to RGB safely
+        if img.mode in ('RGBA', 'LA', 'PA'):
+            # Create white background and composite
             bg = Image.new('RGB', img.size, (255, 255, 255))
-            if img.mode == 'P':
+            if img.mode == 'PA':
                 img = img.convert('RGBA')
-            bg.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+            bg.paste(img, mask=img.split()[-1])
             img = bg
-        elif img.mode != 'RGB':
+        elif img.mode == 'P':
+            img = img.convert('RGBA')
+            bg = Image.new('RGB', img.size, (255, 255, 255))
+            bg.paste(img, mask=img.split()[-1])
+            img = bg
+        elif img.mode in ('CMYK', 'YCbCr', 'LAB', 'HSV'):
             img = img.convert('RGB')
-        # Use new Resampling.LANCZOS, with fallback to old LANCZOS and BICUBIC
+        elif img.mode not in ('RGB',):
+            img = img.convert('RGB')
+        # Check if image is effectively blank (all one color)
+        extrema = img.convert('L').getextrema()
+        if extrema[1] - extrema[0] < 5:
+            logger.warning(f"  Image appears blank/monochrome (range={extrema}), skipping")
+            return None
+        # Resize
         resample_filter = getattr(Image.Resampling, 'LANCZOS', getattr(Image, 'LANCZOS', Image.BICUBIC))
         img.thumbnail((max_dim, max_dim), resample_filter)
         thumb_io = io.BytesIO()
@@ -380,8 +396,11 @@ def download_and_convert_thumbnail(url, referer, max_size_kb=200, max_dim=640):
     except Image.DecompressionBombError:
         logger.error("  Image too large (decompression bomb limit), skipped")
         return None
+    except Image.UnidentifiedImageError:
+        logger.warning(f"  Cannot identify image format (Content-Type: {r.headers.get('Content-Type','?')})")
+        return None
     except Exception as e:
-        logger.error(f"  Thumbnail processing failed: {e}")
+        logger.error(f"  Thumbnail failed: {type(e).__name__}: {e}")
         return None
 
 
