@@ -547,12 +547,8 @@ async def generate_tags(title):
     if not DEEPSEEK_API_KEY or not title or title == "Unknown":
         return None
     try:
-        prompt = (
-            "你是一个成人视频分类助手。根据标题生成3-5个中文标签，只返回标签用#开头空格分隔，不要任何解释。
-"
-            f"标题：{title}
-标签："
-        )
+        prompt = ("你是一个成人视频分类助手。根据标题生成3-5个中文标签，只返回标签用#开头空格分隔，不要任何解释。\n"
+                 f"标题：{title}\n标签：")
         resp = await asyncio.to_thread(
             lambda: requests.post(
                 "https://api.deepseek.com/v1/chat/completions",
