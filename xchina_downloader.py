@@ -40,6 +40,7 @@ FETCH_PAGES     = 1
 TG_INTERVAL     = int(os.getenv("TG_INTERVAL", "10"))
 LOOP_INTERVAL   = int(os.getenv("LOOP_INTERVAL", "21600"))
 FFMPEG_TIMEOUT  = int(os.getenv("FFMPEG_TIMEOUT", "300"))
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 MAX_SEEN_ENTRIES = int(os.getenv("MAX_SEEN_ENTRIES", "50000"))
 API_ID          = int(os.getenv("TG_API_ID", "0"))
 API_HASH        = os.getenv("TG_API_HASH", "")
@@ -542,7 +543,43 @@ def _download_m3u8_fallback(m3u8_url, referer, out_path):
 
 SKIP_PLATFORMS = {"其他中文AV", "独立创作者"}
 
-def build_caption(info, duration=None):
+async def generate_tags(title):
+    if not DEEPSEEK_API_KEY or not title or title == "Unknown":
+        return None
+    try:
+        prompt = (
+            "你是一个成人视频分类助手。根据标题生成3-5个中文标签，只返回标签用#开头空格分隔，不要任何解释。
+"
+            f"标题：{title}
+标签："
+        )
+        resp = await asyncio.to_thread(
+            lambda: requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 60,
+                    "temperature": 0.3,
+                },
+                headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                timeout=15,
+            )
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            raw = data["choices"][0]["message"]["content"].strip()
+            tags = [t.strip() for t in raw.split() if t.strip().startswith("#")]
+            if tags:
+                return " ".join(tags)
+    except Exception as e:
+        logger.debug(f"Tag generation failed: {e}")
+    return None
+
+def build_caption(info, duration=None, tags=None):
     title = info.get("标题", "Unknown")
     platform = info.get("平台", "")
     actor = info.get("演员", "")
@@ -553,6 +590,8 @@ def build_caption(info, duration=None):
         lines.append(f"演员：#{actor}")
     if duration:
         lines.append(f"时长：{duration}")
+    if tags:
+        lines.append(tags)
     return "\n".join(lines)
 
 async def send_video_with_thumb(client, video_path, thumb_path, caption):
@@ -664,7 +703,8 @@ async def run_once():
                 thumb_path = download_and_convert_thumbnail(img_url, video["url"])
             else:
                 logger.warning("  No preview image found, sending without thumbnail")
-            caption = build_caption(video, duration)
+            tags = await generate_tags(video.get("标题", ""))
+            caption = build_caption(video, duration, tags)
             ok = await send_video_with_thumb(client, video_path, thumb_path, caption)
             for p in [video_path, thumb_path]:
                 if p and os.path.exists(p):
