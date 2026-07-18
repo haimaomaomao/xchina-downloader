@@ -287,10 +287,29 @@ def get_videos_from_list(page):
 
 # ==================== Detail page parsing ====================
 def get_m3u8_url(video_url):
+    """[DEPRECATED] Use get_detail_page_info() instead.
+    Makes a separate request — kept only for backward compat."""
+    info = get_detail_page_info(video_url)
+    return info[0] if info else None
+
+
+def get_preview_image_url(video_url):
+    """[DEPRECATED] Use get_detail_page_info() instead.
+    Makes a separate request — kept only for backward compat."""
+    info = get_detail_page_info(video_url)
+    return info[1] if info else None
+
+
+def get_detail_page_info(video_url):
+    """Fetch the detail page ONCE and extract both m3u8 URL and preview image URL.
+    Returns (m3u8_url, preview_image_url) or (None, None) on failure.
+    This avoids the Cloudflare challenge issue from making two separate requests."""
     r = safe_get(video_url)
     if not r:
-        return None
-    # Primary: match video.xchina.download domain m3u8
+        return (None, None)
+
+    # --- m3u8 URL ---
+    m3u8_url = None
     m = re.search(
         r"src:\s*['\"]"
         r"(https://video\.xchina\.download/m3u8/[^'\"]+\.m3u8[^'\"]*)"
@@ -298,49 +317,49 @@ def get_m3u8_url(video_url):
         r.text
     )
     if m:
-        return m.group(1)
-    # Fallback: only match xchina-related domain m3u8 links
-    m2 = re.search(r"(https://[^\s'\"<>]*xchina[^\s'\"<>]*\.m3u8[^\s'\"<>]*)", r.text)
-    return m2.group(1) if m2 else None
+        m3u8_url = m.group(1)
+    else:
+        m2 = re.search(r"(https://[^\s'\"<>]*xchina[^\s'\"<>]*\.m3u8[^\s'\"<>]*)", r.text)
+        m3u8_url = m2.group(1) if m2 else None
 
-
-def get_preview_image_url(video_url):
-    r = safe_get(video_url)
-    if not r:
-        return None
+    # --- Preview image URL ---
+    img_url = None
     soup = BeautifulSoup(r.text, "html.parser")
-    # 1) screenshot-container: try all imgs, pick the largest (usually best quality)
+    # 1) screenshot-container
     container = soup.select_one("div.screenshot-container")
     if container:
         imgs = container.find_all("img")
         if imgs:
             logger.debug(f"  Found {len(imgs)} screenshot(s) in container")
-            # Try each img, prefer ones with full-size URLs (not thumbnails)
             for img in imgs:
                 src = img.get("src") or img.get("data-src") or ""
-                # Skip tiny thumbnail patterns
                 if src and "thumb" not in src.lower():
-                    return fix_url(src)
-            # Fallback: use first img even if it has 'thumb' in URL
-            src = imgs[0].get("src") or imgs[0].get("data-src")
-            if src:
-                return fix_url(src)
+                    img_url = fix_url(src)
+                    break
+            if not img_url:
+                src = imgs[0].get("src") or imgs[0].get("data-src")
+                if src:
+                    img_url = fix_url(src)
     # 2) og:image meta
-    og = soup.find("meta", property="og:image")
-    if og and og.get("content"):
-        logger.debug("  Using og:image")
-        return fix_url(og["content"])
+    if not img_url:
+        og = soup.find("meta", property="og:image")
+        if og and og.get("content"):
+            logger.debug("  Using og:image")
+            img_url = fix_url(og["content"])
     # 3) twitter:image meta
-    tw = soup.find("meta", attrs={"name": "twitter:image"})
-    if tw and tw.get("content"):
-        logger.debug("  Using twitter:image")
-        return fix_url(tw["content"])
+    if not img_url:
+        tw = soup.find("meta", attrs={"name": "twitter:image"})
+        if tw and tw.get("content"):
+            logger.debug("  Using twitter:image")
+            img_url = fix_url(tw["content"])
     # 4) video tag poster
-    video_tag = soup.find("video")
-    if video_tag and video_tag.get("poster"):
-        logger.debug("  Using video poster")
-        return fix_url(video_tag["poster"])
-    return None
+    if not img_url:
+        video_tag = soup.find("video")
+        if video_tag and video_tag.get("poster"):
+            logger.debug("  Using video poster")
+            img_url = fix_url(video_tag["poster"])
+
+    return (m3u8_url, img_url)
 
 
 # ==================== Image & video processing ====================
@@ -679,7 +698,7 @@ async def run_once():
         failed_videos = []
         for idx, video in enumerate(unique):
             logger.info(f"[{idx+1}/{len(unique)}] {video['url']}")
-            m3u8 = get_m3u8_url(video["url"])
+            m3u8, img_url = get_detail_page_info(video["url"])
             if not m3u8:
                 logger.warning("  No m3u8 found, will retry next run")
                 failed_videos.append(video["vid_id"])
@@ -691,7 +710,7 @@ async def run_once():
                 continue
             video_path, duration = result
             thumb_path = None
-            img_url = get_preview_image_url(video["url"])
+            # img_url already obtained from get_detail_page_info above
             if not img_url and video.get("cover"):
                 img_url = video["cover"]
                 logger.info(f"  Using list page cover: {img_url}")
