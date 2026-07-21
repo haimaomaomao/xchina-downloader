@@ -836,7 +836,8 @@ def download_cover_photo(url, referer, max_dim=1920):
 
 def download_m3u8_to_mp4(m3u8_url, referer):
 
-    """Download m3u8 + remux to MP4 in one step via ffmpeg, passing cookies for auth."""
+    """Download m3u8 + remux to MP4. Primary: 8-thread parallel TS download.
+    Fallback: ffmpeg single-thread direct download."""
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
 
@@ -844,98 +845,60 @@ def download_m3u8_to_mp4(m3u8_url, referer):
 
     out_path = tmp.name
 
+    # Helper: extract duration via ffprobe
+    def _get_duration(path):
+        try:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", path],
+                capture_output=True, text=True, timeout=30
+            )
+            secs = float(probe.stdout.strip())
+            if secs >= 3600:
+                return f"{int(secs//3600)}:{int(secs%3600//60):02d}:{int(secs%60):02d}"
+            else:
+                return f"{int(secs//60)}:{int(secs%60):02d}"
+        except Exception as e:
+            logger.warning(f"  Duration extraction failed: {e}")
+            return None
+
+    # Primary: 8-thread parallel download (faster than ffmpeg single-thread)
+    logger.info("  Trying 8-thread parallel download...")
+    fallback_result = _download_m3u8_fallback(m3u8_url, referer, out_path)
+    if fallback_result:
+        video_path, _ = fallback_result
+        duration = _get_duration(video_path)
+        logger.info(f"  MP4 ready: {os.path.getsize(video_path)/1024/1024:.1f}MB")
+        return (video_path, duration)
+
+    # Fallback: ffmpeg direct download
+    logger.info(f"  Fallback: ffmpeg downloading... (max {FFMPEG_TIMEOUT}s)")
     try:
-
-        logger.info(f"  ffmpeg downloading + remuxing... (max {FFMPEG_TIMEOUT}s)")
-
         sys.stdout.flush()
-
-        # Build cookie header from existing session cookies
-
         cookie_str = "; ".join(
-
             f"{c.name}={c.value}"
-
             for c in SESSION.cookies
-
             if c.domain in ("xchina.co", ".xchina.co", "video.xchina.download", ".video.xchina.download")
-
         )
-
         cmd = [
-
             "ffmpeg", "-y",
-
             "-headers", f"Referer: {referer}\r\nCookie: {cookie_str}",
-
             "-i", m3u8_url,
-
             "-c", "copy", "-movflags", "+faststart",
-
             "-f", "mp4", out_path
-
         ]
-
         result = subprocess.run(cmd, capture_output=True, timeout=FFMPEG_TIMEOUT)
-
         if result.returncode != 0:
-
             err = result.stderr.decode() if result.stderr else "unknown"
             logger.warning(f"  ffmpeg failed (rc={result.returncode}): {err[-400:]}")
-
-            # If ffmpeg fails, try binary concat fallback
-            logger.info("  Trying fallback: requests + ffmpeg remux...")
-
-            return _download_m3u8_fallback(m3u8_url, referer, out_path)
-
+            return None
         size_mb = os.path.getsize(out_path) / 1024 / 1024
-
         logger.info(f"  MP4 ready: {size_mb:.1f}MB")
-
-        # Extract duration via ffprobe
-
-        duration = None
-
-        try:
-
-            probe = subprocess.run(
-
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-
-                 "-of", "csv=p=0", out_path],
-
-                capture_output=True, text=True, timeout=30
-
-            )
-
-            secs = float(probe.stdout.strip())
-
-            if secs >= 3600:
-
-                duration = f"{int(secs//3600)}:{int(secs%3600//60):02d}:{int(secs%60):02d}"
-
-            else:
-
-                duration = f"{int(secs//60)}:{int(secs%60):02d}"
-
-        except:
-
-            pass
-
-        return out_path, duration
-
-    except subprocess.TimeoutExpired:
-
-        logger.warning(f"  ffmpeg timeout ({FFMPEG_TIMEOUT}s), trying fallback...")
-
-        return _download_m3u8_fallback(m3u8_url, referer, out_path)
-
+        duration = _get_duration(out_path)
+        return (out_path, duration)
     except Exception as e:
-
-        logger.error(f"  Download error: {e}")
-
+        logger.warning(f"  ffmpeg error: {e}")
         return None
-
 
 def _download_m3u8_fallback(m3u8_url, referer, out_path):
 
@@ -985,7 +948,7 @@ def _download_m3u8_fallback(m3u8_url, referer, out_path):
 
             try:
 
-                sr = SESSION.get(url, headers={"Referer": referer}, timeout=60)
+                sr = SESSION.get(url, headers={"Referer": referer}, timeout=120)
 
                 sr.raise_for_status()
 
@@ -1005,7 +968,7 @@ def _download_m3u8_fallback(m3u8_url, referer, out_path):
                 return None
 
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
 
             results = list(executor.map(download_seg, enumerate(segments)))
 
@@ -1188,10 +1151,17 @@ def build_caption(info, duration=None, tags=None):
 async def send_media_group(client, chat_id, photo_path, video_path, thumb_path, caption):
     """Send photo + video as a media group (stacked layout: photo on top, video below, caption at bottom)."""
     try:
-        logger.info("  Uploading media files...")
-        uploaded_photo = await client.upload_file(photo_path) if photo_path else None
-        uploaded_video = await client.upload_file(video_path)
-        uploaded_thumb = await client.upload_file(thumb_path) if thumb_path else None
+        logger.info("  Uploading media files (concurrently)...")
+        upload_tasks = []
+        if photo_path:
+            upload_tasks.append(client.upload_file(photo_path))
+        upload_tasks.append(client.upload_file(video_path))
+        thumb_task = asyncio.create_task(client.upload_file(thumb_path)) if thumb_path else None
+
+        results = await asyncio.gather(*upload_tasks)
+        uploaded_video = results[-1]
+        uploaded_photo = results[0] if len(results) > 1 else None
+        uploaded_thumb = await thumb_task if thumb_task else None
 
         media_items = []
         if uploaded_photo:
