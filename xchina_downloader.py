@@ -36,7 +36,7 @@ SEEN_FILE       = os.path.join(DATA_DIR, "seen_xchina_video.json")
 PAGE_FILE       = os.path.join(DATA_DIR, "next_video_page.txt")
 SESSION_FILE    = os.path.join(DATA_DIR, "xchina_video.session")
 START_PAGE      = 1
-FETCH_PAGES     = 1
+FETCH_PAGES     = 3
 TG_INTERVAL     = int(os.getenv("TG_INTERVAL", "10"))
 LOOP_INTERVAL   = int(os.getenv("LOOP_INTERVAL", "21600"))
 FFMPEG_TIMEOUT  = int(os.getenv("FFMPEG_TIMEOUT", "300"))
@@ -424,6 +424,48 @@ def download_and_convert_thumbnail(url, referer, max_size_kb=200, max_dim=640):
         return None
 
 
+def download_cover_photo(url, referer, max_dim=1920):
+    """Download cover image for sending as a standalone photo (larger than thumbnail)."""
+    try:
+        logger.info(f"  Downloading cover photo: {url[:80]}...")
+        r = SESSION.get(url, headers={"Referer": referer}, timeout=30)
+        r.raise_for_status()
+        if len(r.content) < 500:
+            logger.warning(f"  Cover photo too small ({len(r.content)} bytes)")
+            return None
+        img = Image.open(io.BytesIO(r.content))
+        if img.mode in ('RGBA', 'LA', 'PA'):
+            bg = Image.new('RGB', img.size, (255, 255, 255))
+            if img.mode == 'PA':
+                img = img.convert('RGBA')
+            bg.paste(img, mask=img.split()[-1])
+            img = bg
+        elif img.mode == 'P':
+            img = img.convert('RGBA')
+            bg = Image.new('RGB', img.size, (255, 255, 255))
+            bg.paste(img, mask=img.split()[-1])
+            img = bg
+        elif img.mode not in ('RGB',):
+            img = img.convert('RGB')
+        if max(img.size) > max_dim:
+            resample_filter = getattr(Image.Resampling, 'LANCZOS', Image.BICUBIC)
+            img.thumbnail((max_dim, max_dim), resample_filter)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
+        img.save(tmp, format='JPEG', quality=92, optimize=True)
+        tmp.close()
+        size_kb = os.path.getsize(tmp.name) // 1024
+        logger.info(f"  Cover photo ready: {size_kb}KB, {img.size[0]}x{img.size[1]}")
+        return tmp.name
+    except Image.DecompressionBombError:
+        logger.error("  Cover photo too large (decompression bomb limit), skipped")
+        return None
+    except Image.UnidentifiedImageError:
+        logger.warning("  Cannot identify cover image format")
+        return None
+    except Exception as e:
+        logger.error(f"  Cover photo failed: {type(e).__name__}: {e}")
+        return None
+
 def download_m3u8_to_mp4(m3u8_url, referer):
     """Download m3u8 + remux to MP4 in one step via ffmpeg, passing cookies for auth."""
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
@@ -710,18 +752,55 @@ async def run_once():
                 continue
             video_path, duration = result
             thumb_path = None
+            photo_path = None
             # img_url already obtained from get_detail_page_info above
             if not img_url and video.get("cover"):
                 img_url = video["cover"]
                 logger.info(f"  Using list page cover: {img_url}")
             if img_url:
+                photo_path = download_cover_photo(img_url, video["url"])
                 thumb_path = download_and_convert_thumbnail(img_url, video["url"])
             else:
-                logger.warning("  No preview image found, sending without thumbnail")
+                logger.warning("  No preview image found, sending without cover")
+
             tags = await generate_tags(video.get("标题", ""))
             caption = build_caption(video, duration, tags)
-            ok = await send_video_with_thumb(client, video_path, thumb_path, caption)
-            for p in [video_path, thumb_path]:
+            ok = True
+
+            # 1) Send cover photo first
+            if photo_path:
+                try:
+                    logger.info("  Sending cover photo...")
+                    await client.send_file(CHAT_ID, photo_path)
+                    await asyncio.sleep(TG_INTERVAL)
+                except Exception as e:
+                    logger.warning(f"  Cover photo send failed: {e}")
+
+            # 2) Send video with thumbnail (no caption)
+            try:
+                logger.info("  Sending video...")
+                await client.send_file(
+                    CHAT_ID,
+                    video_path,
+                    thumb=thumb_path,
+                    supports_streaming=True,
+                    force_document=False
+                )
+                await asyncio.sleep(TG_INTERVAL)
+            except Exception as e:
+                logger.error(f"  Video send failed: {e}")
+                ok = False
+
+            # 3) Send caption text
+            if ok and caption:
+                try:
+                    logger.info("  Sending caption...")
+                    await client.send_message(CHAT_ID, caption)
+                except Exception as e:
+                    logger.warning(f"  Caption send failed: {e}")
+
+            # Cleanup
+            for p in [video_path, thumb_path, photo_path]:
                 if p and os.path.exists(p):
                     os.unlink(p)
             if ok:
