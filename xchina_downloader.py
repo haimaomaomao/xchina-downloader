@@ -105,9 +105,11 @@ HEADERS = {
 }
 
 SESSION = requests.Session()
+adapter = requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=32)
+SESSION.mount("https://", adapter)
+SESSION.mount("http://", adapter)
 
 SESSION.headers.update(HEADERS)
-
 
 # SSL verification: enabled by default; set VERIFY_SSL=0 to disable
 
@@ -1005,15 +1007,18 @@ def _download_m3u8_fallback(m3u8_url, referer, out_path):
 
         except subprocess.TimeoutExpired:
             logger.warning(f"  ffmpeg remux timeout ({FFMPEG_TIMEOUT}s)")
-
             return None
 
         except subprocess.CalledProcessError as e:
 
             err_text = e.stderr.decode() if e.stderr else "unknown"
-            logger.warning(f"  ffmpeg remux failed: {err_text[-400:]}")
-
-            return None
+            logger.warning(f"  ffmpeg remux failed (first attempt): {err_text[-200:]}")
+            logger.info("  Retrying ffmpeg remux once...")
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, timeout=FFMPEG_TIMEOUT)
+            except Exception as e2:
+                logger.warning(f"  ffmpeg remux failed again: {e2}")
+                return None
 
         size_mb = os.path.getsize(out_path) / 1024 / 1024
 
