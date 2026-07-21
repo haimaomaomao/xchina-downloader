@@ -1197,6 +1197,9 @@ async def send_media_group(client, chat_id, photo_path, video_path, thumb_path, 
         logger.error(f"  Media group send error: {e}")
         return False
 
+
+
+
 async def send_video_with_thumb(client, video_path, thumb_path, caption):
 
     try:
@@ -1384,15 +1387,40 @@ async def run_once():
 
             photo_path = None
             thumb_path = None
-            # img_url already obtained from get_detail_page_info above
-            if not img_url and video.get("cover"):
-                img_url = video["cover"]
-                logger.info(f"  Using list page cover: {img_url}")
-            if img_url:
-                photo_path = download_cover_photo(img_url, video["url"])
-                thumb_path = download_and_convert_thumbnail(img_url, video["url"])
-            else:
-                logger.warning("  No preview image found, sending without thumbnail")
+
+            # Retry cover image up to 3 times (must have a cover)
+            cover_retries = 3
+            for attempt in range(1, cover_retries + 1):
+                if not img_url:
+                    if video.get("cover"):
+                        img_url = video["cover"]
+                        logger.info(f"  Using list page cover: {img_url}")
+                    else:
+                        # Re-fetch detail page for cover
+                        logger.info(f"  Retrying cover fetch (attempt {attempt}/{cover_retries})...")
+                        m3u8, img_url = get_detail_page_info(video["url"])
+                        if not img_url and attempt < cover_retries:
+                            await asyncio.sleep(10)
+                if img_url:
+                    photo_path = download_cover_photo(img_url, video["url"])
+                    thumb_path = download_and_convert_thumbnail(img_url, video["url"])
+                    if photo_path and thumb_path:
+                        break
+                    else:
+                        logger.warning(f"  Cover download failed (attempt {attempt}/{cover_retries})")
+                        img_url = None
+                        photo_path = None
+                        thumb_path = None
+                        await asyncio.sleep(10)
+
+            if not photo_path:
+                logger.error("  No cover image after retries, skipping video")
+                failed_videos.append(video["vid_id"])
+                for p in [video_path]:
+                    if p and os.path.exists(p):
+                        os.unlink(p)
+                await asyncio.sleep(TG_INTERVAL)
+                continue
 
             tags = await generate_tags(video.get("标题", ""))
             caption = build_caption(video, duration, tags)
