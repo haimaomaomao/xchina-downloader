@@ -139,6 +139,7 @@ def inject_cookies(cookie_str):
             SESSION.cookies.set(k.strip(), v.strip(), domain="xchina.co")
 
             SESSION.cookies.set(k.strip(), v.strip(), domain="video.xchina.download")
+            SESSION.cookies.set(k.strip(), v.strip(), domain="img.xchina.download")
 
     logger.info("Cookies injected")
 
