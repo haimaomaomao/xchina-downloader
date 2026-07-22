@@ -1156,17 +1156,12 @@ def build_caption(info, duration=None, tags=None):
 async def send_media_group(client, chat_id, photo_path, video_path, thumb_path, caption):
     """Send photo + video as a media group (stacked layout: photo on top, video below, caption at bottom)."""
     try:
-        logger.info("  Uploading media files (concurrently)...")
-        upload_tasks = []
+        logger.info("  Uploading media files (sequentially)...")
+        uploaded_photo = None
         if photo_path:
-            upload_tasks.append(client.upload_file(photo_path))
-        upload_tasks.append(client.upload_file(video_path))
-        thumb_task = asyncio.create_task(client.upload_file(thumb_path)) if thumb_path else None
-
-        results = await asyncio.gather(*upload_tasks)
-        uploaded_video = results[-1]
-        uploaded_photo = results[0] if len(results) > 1 else None
-        uploaded_thumb = await thumb_task if thumb_task else None
+            uploaded_photo = await client.upload_file(photo_path)
+        uploaded_video = await client.upload_file(video_path)
+        uploaded_thumb = await client.upload_file(thumb_path) if thumb_path else None
 
         media_items = []
         if uploaded_photo:
@@ -1404,7 +1399,7 @@ async def run_once():
                 if img_url:
                     photo_path = download_cover_photo(img_url, video["url"])
                     thumb_path = download_and_convert_thumbnail(img_url, video["url"])
-                    if photo_path and thumb_path:
+                    if photo_path:
                         break
                     else:
                         logger.warning(f"  Cover download failed (attempt {attempt}/{cover_retries})")
@@ -1433,6 +1428,13 @@ async def run_once():
             except Exception as e:
                 logger.error(f"  Send failed: {e}")
                 ok = False
+            if not ok and thumb_path:
+                logger.warning("  Media group failed, falling back to video+thumb...")
+                try:
+                    ok = await send_video_with_thumb(client, CHAT_ID, video_path, thumb_path, caption)
+                except Exception as e2:
+                    logger.error(f"  Fallback send failed: {e2}")
+                    ok = False
 
             # Cleanup
             for p in [video_path, thumb_path, photo_path]:
